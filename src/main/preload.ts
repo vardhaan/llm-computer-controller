@@ -8,7 +8,9 @@ const api = {
   listApplications: () => ipcRenderer.invoke('list-applications'),
   openPath: (path: string) => ipcRenderer.invoke('open-path', path),
   searchFiles: (query: string) => ipcRenderer.invoke('search-files', query),
-  llmQuery: (query: string) => ipcRenderer.invoke('llm-query', query)
+  llmQuery: (query: string) => ipcRenderer.invoke('llm-query', query),
+  executeConfirmedAppleScript: (scriptContent: string) => 
+    ipcRenderer.invoke('execute-confirmed-applescript', scriptContent)
 };
 
 try {

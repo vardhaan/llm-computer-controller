@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, globalShortcut, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, globalShortcut, powerMonitor, dialog } from 'electron';
 import * as path from 'path';
 import * as isDev from 'electron-is-dev';
 import { promises as fsPromises } from 'fs';
@@ -55,7 +55,7 @@ const toolsDefinition = {
     parameters: searchFilesSchema,
   }),
   executeAppleScript: tool({
-    description: 'Generate and execute an AppleScript to control applications or macOS features. Use this for complex tasks not covered by other tools (e.g., controlling specific app functions like opening browser tabs, creating documents, controlling music players). Write the AppleScript code in the scriptContent parameter. SECURITY NOTE: Exercise extreme caution. Only generate scripts that directly fulfill the user request and avoid potentially harmful actions.',
+    description: 'Generate and execute an AppleScript to control applications or macOS features. Use this for complex tasks not covered by other tools (e.g., controlling specific app functions like **opening/controlling browser tabs/windows (Chrome, Safari, etc.)**, creating documents in Notes/TextEdit, controlling music players like Spotify/Music). Write the AppleScript code in the scriptContent parameter. SECURITY NOTE: Exercise extreme caution. Only generate scripts that directly fulfill the user request and avoid potentially harmful actions.',
     parameters: executeAppleScriptSchema,
   }),
   readFileContent: tool({
@@ -138,28 +138,49 @@ async function searchFiles(event: Electron.IpcMainInvokeEvent, query: string) {
   }
 }
 
-// --- AppleScript Execution Function ---
-async function runAppleScript({ scriptContent }: { scriptContent: string }) {
-  console.log(`[Main API] runAppleScript triggered with script:\n---\n${scriptContent}\n---`);
+// --- Modified AppleScript "Execution" Function (Now just signals for confirmation) ---
+async function runAppleScriptNeedsConfirmation({ scriptContent }: { scriptContent: string }) {
+  console.log(`[Main API] runAppleScript tool called by LLM. Script requires confirmation:\\n---\\n${scriptContent}\\n---`);
   if (!scriptContent) {
     console.warn('[Main API] runAppleScript called with empty scriptContent.');
-    return { success: false, error: 'Empty script content provided.' };
+    // Still return the structure, but indicate error or handle as appropriate
+    return { needsConfirmation: false, error: 'Empty script content provided.' };
+  }
+  // Return an object indicating confirmation is needed, DO NOT EXECUTE HERE.
+  return { needsConfirmation: true, scriptContent: scriptContent };
+}
+
+// --- NEW Handler for Actually Executing the Script After Frontend Confirmation ---
+async function executeConfirmedAppleScript(event: Electron.IpcMainInvokeEvent, scriptContent: string) {
+  console.log(`[Main API] executeConfirmedAppleScript triggered by frontend. Running script:\\n---\\n${scriptContent}\\n---`);
+  if (!scriptContent) {
+     return { success: false, error: 'Cannot execute empty script.' };
   }
   try {
-    // IMPORTANT: Using -e directly executes the string. Be mindful of shell metacharacters if the script were dynamic.
-    // For multiline scripts, -e usually works fine. Consider writing to a temp file for very complex scripts.
-    const { stdout, stderr } = await execAsync(`osascript -e "${scriptContent.replace(/\"/g, '\\"')}"`); // Basic escaping for double quotes inside the script string
+    // Split script into lines, filter empty ones, and create args for execFile
+    const scriptLines = scriptContent.split('\n').filter(line => line.trim() !== '');
+    const osascriptArgs = scriptLines.reduce((acc, line) => {
+      acc.push('-e', line.trim()); // Add -e flag and the trimmed line
+      return acc;
+    }, [] as string[]); // Initialize as string array
+
+    console.log(`[Main API] Executing osascript with args:`, osascriptArgs);
+    
+    // Use execFile for cleaner argument handling, pass args array directly
+    const { stdout, stderr } = await execFileAsync('osascript', osascriptArgs);
+
     if (stderr) {
-      console.warn(`[Main API] runAppleScript execution generated stderr: ${stderr}`);
-      // Sometimes scripts output non-fatal errors to stderr, treat as warning unless stdout is empty?
-      // For now, return success but include stderr.
-      return { success: true, output: stdout, errorOutput: stderr };
+      console.warn(`[Main API] executeConfirmedAppleScript execution generated stderr: ${stderr}`);
+      // Return error if stderr is present, as it likely indicates a script failure
+      return { success: false, error: `Script execution failed: ${stderr}` };
     }
-    console.log(`[Main API] runAppleScript success. Output: ${stdout}`);
+    console.log(`[Main API] executeConfirmedAppleScript success. Output: ${stdout}`);
     return { success: true, output: stdout };
-  } catch (error) {
-    console.error(`[Main API] Error executing AppleScript:`, error);
-    return { success: false, error: (error as Error).message };
+  } catch (error: any) { // Catch errors from execFileAsync
+    console.error(`[Main API] Error executing confirmed AppleScript:`, error);
+    // Provide more detailed error info if available (e.g., stderr from the caught error)
+    const errorMessage = error.stderr ? `Command failed: ${error.stderr}` : (error as Error).message;
+    return { success: false, error: errorMessage };
   }
 }
 
@@ -206,8 +227,21 @@ async function handleLlmQuery(event: Electron.IpcMainInvokeEvent, userQuery: str
       content: `You are a powerful assistant integrated into a desktop launcher on macOS. You can list applications, open files/apps/folders by path, search files, **read file content**, and execute arbitrary AppleScript code.
                Available tools: \`listApplications\`, \`openPath\`, \`searchFiles\`, **\`readFileContent\`**, \`executeAppleScript\`.
                Use \`readFileContent\` to get the text from a file. Use \`executeAppleScript\` for complex app control (e.g., new browser tab, control music).
-               **SECURITY WARNING (AppleScript):** Be extremely careful with \`executeAppleScript\`. Only generate scripts that directly match the user's request. Do not generate scripts that could delete files, modify system settings unexpectedly, or access sensitive information unless explicitly requested and confirmed. Double-check your generated scripts for safety and correctness.
-               Respond conversationally, confirm actions taken, and prioritize completing tasks.`
+               **SECURITY WARNING (AppleScript):** Be extremely careful with \`executeAppleScript\`. It requires user confirmation before running. Only generate scripts that directly match the user's request. Do not generate scripts that could delete files, modify system settings unexpectedly, or access sensitive information unless explicitly requested and confirmed. Double-check your generated scripts for safety and correctness.
+               Respond conversationally, confirm actions taken, and prioritize completing tasks.
+
+**Tool Usage Guidelines:**
+- Use \`openPath\` for simple opening of existing files, folders, or apps.
+- Use \`searchFiles\` to find file paths.
+- Use \`readFileContent\` to get the text content of a file.
+- **Use \`executeAppleScript\` for ALL complex application control.** This includes, but is not limited to:
+    - **Web Browser Control:** Opening new tabs, specific URLs, new windows (e.g., in Chrome, Safari).
+    - **Application Interaction:** Creating new documents (Notes, TextEdit), controlling music playback (Spotify, Music), interacting with specific UI elements if necessary.
+    - Any task requiring interaction *within* an application beyond just launching it.
+
+**SECURITY WARNING (AppleScript):** Be extremely careful with \`executeAppleScript\`. It requires user confirmation before running. Only generate scripts that directly match the user's request. Do not generate scripts that could delete files, modify system settings unexpectedly, or access sensitive information unless explicitly requested and confirmed. Double-check your generated scripts for safety and correctness.
+
+Respond conversationally, confirm actions taken, and prioritize completing tasks.`
     },
     { role: 'user', content: userQuery }
   ];
@@ -221,20 +255,20 @@ async function handleLlmQuery(event: Electron.IpcMainInvokeEvent, userQuery: str
     }
   }));
 
+  // Map the LLM tool name 'executeAppleScript' to our *confirmation signaling* function
   const availableFunctions: { [key: string]: Function } = {
     listApplications: listApplications,
     openPath: (args: { filePath: string }) => openPath(null as any, args.filePath),
     searchFiles: (args: { query: string }) => searchFiles(null as any, args.query),
-    runAppleScript: (args: { scriptContent: string }) => runAppleScript(args),
+    executeAppleScript: (args: { scriptContent: string }) => runAppleScriptNeedsConfirmation(args), // Map to the confirmation function
     readFileContent: (args: { filePath: string }) => readFileContent(args),
   };
 
   const maxTurns = 5; // Limit iterations to prevent infinite loops
-  let lastToolResults: any[] | null = null; // Keep track of results from the last tool execution turn
 
   try {
     for (let turn = 0; turn < maxTurns; turn++) {
-      console.log(`[Main LLM] Turn ${turn + 1} / ${maxTurns}. Messages:`, messages);
+      console.log(`[Main LLM] Turn ${turn + 1} / ${maxTurns}. Messages:`, messages.length); // Avoid logging full messages potentially containing sensitive args
       const response = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: messages,
@@ -244,74 +278,151 @@ async function handleLlmQuery(event: Electron.IpcMainInvokeEvent, userQuery: str
 
       const responseMessage = response.choices[0].message;
       messages.push(responseMessage); // Add assistant's response to history
-      console.log(`[Main LLM] Turn ${turn + 1} Response:`, responseMessage);
-
-      lastToolResults = null; // Reset last tool results for this turn
+      // console.log(`[Main LLM] Turn ${turn + 1} Response:`, responseMessage); // Avoid logging potentially sensitive response
 
       const toolCalls = responseMessage.tool_calls;
       if (toolCalls && toolCalls.length > 0) {
         console.log(`[Main LLM] Turn ${turn + 1} - Tool calls detected: ${toolCalls.length}`);
-        const currentTurnToolResults = [];
+
+        // Flag to track if we need to return early for confirmation
+        let confirmationRequired = false;
+        let scriptToConfirm = '';
+
+        // Process tool calls - We only add *results* back to the message history
+        // AppleScript confirmation will return immediately
+        const toolResultMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+
         for (const toolCall of toolCalls) {
           const functionName = toolCall.function.name;
-          let functionToCall: Function | undefined;
-          if (functionName === 'executeAppleScript') {
-            functionToCall = availableFunctions['runAppleScript'];
-          } else if (functionName === 'readFileContent') {
-            functionToCall = availableFunctions['readFileContent'];
-          } else {
-            functionToCall = availableFunctions[functionName];
-          }
+          const functionToCall = availableFunctions[functionName];
+          // IMPORTANT: Use safe-stable-stringify or similar if args could be huge/circular, but JSON.parse is fine for expected OpenAI args.
           const functionArgs = JSON.parse(toolCall.function.arguments);
 
-          console.log(`[Main LLM] Executing tool call: ${functionName} with args:`, functionArgs);
-          let functionResponse;
-          let toolErrorMessage: string | null = null;
-          try {
-            if (!functionToCall) {
-              throw new Error(`Tool function mapping failed for "${functionName}". Check availableFunctions and tool definitions.`);
-            }
-            functionResponse = await functionToCall(functionArgs);
-            console.log(`[Main LLM] Tool ${functionName} executed successfully via mapped function.`);
-          } catch (toolError) {
-            console.error(`[Main LLM] Error executing tool ${functionName}:`, toolError);
-            toolErrorMessage = (toolError as Error).message;
-            functionResponse = { error: toolErrorMessage }; // Provide error structure back
+          console.log(`[Main LLM] Processing tool call: ${functionName}`); // Avoid logging args directly
+
+          if (!functionToCall) {
+             console.error(`[Main LLM] Tool function mapping failed for "${functionName}".`);
+             // Add an error result back to the LLM
+             toolResultMessages.push({
+               tool_call_id: toolCall.id,
+               role: "tool",
+               content: JSON.stringify({ error: `Unknown tool function: ${functionName}` }),
+             });
+             continue; // Process next tool call
           }
-          
-          messages.push({
-            tool_call_id: toolCall.id,
-            role: "tool",
-            content: JSON.stringify(functionResponse), // Send result (or error) back to model
-          });
-          currentTurnToolResults.push({ 
-            call: toolCall, 
-            result: toolErrorMessage ? undefined : functionResponse, // Include result only if no error
-            error: toolErrorMessage // Include error message if present
-          });
+
+          try {
+            // The actual function execution happens here (or confirmation signal)
+            const functionResponse = await functionToCall(functionArgs);
+            console.log(`[Main LLM] Tool ${functionName} processed.`);
+
+            // **** SPECIAL HANDLING FOR APPLESCRIPT CONFIRMATION ****
+            if (functionName === 'executeAppleScript') {
+               // Check if the response object signals confirmation is needed
+               if (functionResponse && typeof functionResponse === 'object' && functionResponse.needsConfirmation === true) {
+                  console.log(`[Main LLM] AppleScript confirmation required for tool call ${toolCall.id}. Returning to frontend.`);
+                  confirmationRequired = true;
+                  scriptToConfirm = functionResponse.scriptContent;
+                  // IMPORTANT: *Break* the loop and return immediately. Do NOT add this result to messages.
+                  break;
+               } else if (functionResponse && typeof functionResponse === 'object' && functionResponse.error) {
+                 // Handle case where runAppleScriptNeedsConfirmation itself had an error (e.g., empty script)
+                 console.warn(`[Main LLM] Pre-confirmation check for AppleScript failed: ${functionResponse.error}`);
+                 toolResultMessages.push({
+                    tool_call_id: toolCall.id,
+                    role: "tool",
+                    content: JSON.stringify({ error: functionResponse.error }),
+                 });
+               } else {
+                 // Should not happen if runAppleScriptNeedsConfirmation is correct, but defensively handle unexpected response
+                 console.error('[Main LLM] Unexpected response structure from runAppleScriptNeedsConfirmation:', functionResponse);
+                 toolResultMessages.push({
+                    tool_call_id: toolCall.id,
+                    role: "tool",
+                    content: JSON.stringify({ error: 'Internal error processing AppleScript confirmation.' }),
+                 });
+               }
+               continue; // Continue processing other tool calls *unless* confirmationRequired was set and we broke
+            }
+            // **** END SPECIAL HANDLING ****
+
+            // For all *other* successful tool calls, add their results to be sent back to LLM
+            toolResultMessages.push({
+              tool_call_id: toolCall.id,
+              role: "tool",
+              // Stringify the actual result from listApplications, searchFiles, etc.
+              content: JSON.stringify(functionResponse),
+            });
+
+          } catch (toolError) {
+            console.error(`[Main LLM] Error processing tool ${functionName}:`, toolError);
+             toolResultMessages.push({
+               tool_call_id: toolCall.id,
+               role: "tool",
+               content: JSON.stringify({ error: `Error executing tool ${functionName}: ${(toolError as Error).message}` }),
+             });
+          }
+        } // End of for...of toolCalls loop
+
+        // If confirmation is required, return the special object to the frontend immediately
+        if (confirmationRequired) {
+          // Ensure script content is valid before returning
+          if (typeof scriptToConfirm !== 'string') {
+             console.error('[Main LLM] Invalid script content type during confirmation return:', typeof scriptToConfirm);
+             return { type: 'error', error: 'Internal error: Invalid script content for confirmation.' };
+          }
+          return { type: 'applescript_confirmation_required', scriptContent: scriptToConfirm };
         }
-        lastToolResults = currentTurnToolResults; // Store results for potential return
-        // Continue to the next iteration of the loop to send results back to LLM
+
+        // If no confirmation needed, add all gathered tool results to messages and continue loop
+        if (toolResultMessages.length > 0) {
+           messages.push(...toolResultMessages);
+           console.log(`[Main LLM] Added ${toolResultMessages.length} tool results to history. Continuing LLM loop.`);
+           continue; // Go to next LLM turn
+        }
+
+        // If there were tool calls but none resulted in messages (e.g., only AppleScript error happened)
+        // Check if the assistant provided a text response alongside the failed tool call
+        if (responseMessage.content) {
+           console.log('[Main LLM] Tool calls processed with errors/no results, but text response found.');
+           return { type: 'text_response', content: responseMessage.content };
+        } else {
+           console.warn('[Main LLM] Tool calls processed, but no results added, no confirmation requested, and no text response. Ending turn.');
+           // Return an error as this state is unexpected
+           return { type: 'error', error: 'LLM interaction finished unexpectedly after tool processing without results or text.' };
+        }
+
       } else {
         // No tool calls, this is a final text response
         console.log(`[Main LLM] Turn ${turn + 1} - No tool calls. Final text response.`);
-        return { type: 'text_response', content: responseMessage.content };
+        // Ensure content is not null/undefined before returning
+        if (responseMessage.content) {
+           return { type: 'text_response', content: responseMessage.content };
+        } else {
+           console.warn('[Main LLM] Turn ended with no tool calls and no text content in the response message.');
+           // It's possible the LLM just returns nothing, handle gracefully. Maybe return an empty text response?
+           return { type: 'text_response', content: '' }; // Or return an error if this is unexpected
+        }
       }
-    }
+    } // End of for... turns loop
 
-    // If loop finishes without a text response (e.g., max turns reached after tool call)
-    console.warn(`[Main LLM] Max turns (${maxTurns}) reached or loop ended unexpectedly.`);
-    if (lastToolResults) {
-      console.log('[Main LLM] Returning last tool execution results.');
-      return { type: 'tool_executed', results: lastToolResults };
+    // If loop finishes without a text response or confirmation (e.g., max turns reached)
+    console.warn(`[Main LLM] Max turns (${maxTurns}) reached.`);
+    // Return the last assistant message content if available, otherwise error
+    const lastMessage = messages[messages.length - 1];
+    if (lastMessage?.role === 'assistant' && lastMessage.content) {
+        console.log('[Main LLM] Max turns reached, returning last assistant text response.');
+        return { type: 'text_response', content: lastMessage.content };
     } else {
-       console.error('[Main LLM] Loop finished without text response or tool results.');
-       return { type: 'error', error: 'LLM interaction finished unexpectedly after multiple turns.' };
+        console.error(`[Main LLM] Max turns (${maxTurns}) reached without a final response or confirmation.`);
+        return { type: 'error', error: `LLM interaction reached max turns (${maxTurns}) without a final response.` };
     }
 
   } catch (error) {
     console.error('[Main LLM] Error during OpenAI API call or processing:', error);
-    return { type: 'error', error: (error as Error).message };
+    // Check for specific OpenAI error types if needed, otherwise return generic message
+    const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred during LLM processing.';
+    return { type: 'error', error: errorMessage };
   }
 }
 
@@ -398,6 +509,7 @@ app.whenReady().then(() => {
   ipcMain.handle('open-path', openPath);
   ipcMain.handle('search-files', searchFiles);
   ipcMain.handle('llm-query', handleLlmQuery);
+  ipcMain.handle('execute-confirmed-applescript', executeConfirmedAppleScript); // Register the new handler
   console.log('[Main] IPC handlers registered.');
 
   createWindow();
