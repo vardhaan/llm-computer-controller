@@ -1,0 +1,40 @@
+## Using the `searchFiles` Tool (macOS Spotlight via `mdfind`)
+
+This tool allows you to search for files and applications on the user's macOS system using the Spotlight index via the `mdfind` command-line utility.
+
+**Current Implementation:**
+
+*   The tool currently takes a single string argument (`query`).
+*   It executes a basic `mdfind <query>` command.
+*   This searches across *all* indexed metadata (file names, content, attributes, etc.) and returns a raw list of matching file paths.
+*   The results displayed to the user might be limited (e.g., to the first 50 matches).
+
+**How to Formulate Effective Queries:**
+
+1.  **Keep it Simple:** Start with basic keywords or names. The underlying Spotlight index is powerful. Examples:
+    *   `searchFiles("presentation slides")`
+    *   `searchFiles("budget spreadsheet")`
+    *   `searchFiles("report.docx")`
+    *   `searchFiles("photoshop")` (to find the app)
+
+2.  **Be Specific if Needed:** If the simple query is too broad, you can add more keywords.
+    *   `searchFiles("Q3 budget spreadsheet")`
+
+**Advanced `mdfind` Syntax (Potential Future Enhancements):**
+
+While the *current* tool only accepts a simple string, be aware that `mdfind` itself supports more complex queries. If the tool is enhanced later, these might become relevant:
+
+*   **Specific Attributes:** You can target metadata like filename (`kMDItemDisplayName`), content (`kMDItemTextContent`), or type (`kMDItemContentTypeTree`).
+*   **Operators:** Use `&&` (AND), `||` (OR), `!` (NOT). Parentheses `()` for grouping.
+*   **Wildcards:** `*` can be used for wildcard matching.
+*   **Flags:** Add flags like `c` (case-insensitive), `d` (diacritic-insensitive), `w` (word-based matching) like `"*query*cdw"`.
+*   **Content Types:** Filter by types like `'public.application'`, `'public.content'`, `'public.folder'`, `'public.image'`, `'public.audio'`, `'public.video'`, etc.
+
+**Example Advanced Query (Conceptual - Not currently supported by the simple tool):**
+`searchFiles("(kMDItemDisplayName == "*report*"cdw || kMDItemTextContent == "*report*"cdw) && kMDItemContentTypeTree == 'com.microsoft.word.doc'")` - Find Word documents with "report" in the name or content.
+
+**Current Guidance for LLM:**
+
+*   **Provide the simplest, most direct query string likely to yield the desired results.**
+*   Assume the basic `mdfind <query>` behavior unless told otherwise.
+*   Do not attempt to use complex `mdfind` syntax (like `kMDItem...`, `&&`, `||`) as the tool currently doesn't parse it. Focus on keywords. 

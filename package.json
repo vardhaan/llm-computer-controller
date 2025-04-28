@@ -1,0 +1,51 @@
+{
+  "name": "ai-launcher",
+  "version": "1.0.0",
+  "description": "AI-powered application and file launcher",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "start": "npm run start:dev",
+    "build": "npm run build:webpack && npm run build:preload",
+    "build:webpack": "webpack --config webpack.config.js",
+    "build:preload": "tsc src/main/preload.ts --outDir dist/main --module commonjs --esModuleInterop true",
+    "start:renderer": "webpack serve --config webpack.config.js --name renderer --port $DEV_PORT",
+    "start:main": "electron .",
+    "start:dev": "export DEV_PORT=$(npx detect-port 9000) && npm run build && concurrently \"npm run start:renderer\" \"npm run start:main\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "concurrently": "^9.1.2",
+    "detect-port": "^2.1.0",
+    "dotenv": "^16.5.0",
+    "electron": "^28.3.3",
+    "electron-builder": "^26.0.12",
+    "electron-is-dev": "^3.0.1",
+    "html-webpack-plugin": "^5.6.3",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3",
+    "webpack": "^5.99.7",
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.1"
+  },
+  "dependencies": {
+    "@chakra-ui/layout": "^2.3.1",
+    "@chakra-ui/react": "^3.16.1",
+    "@chakra-ui/theme": "^3.4.6",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "ai": "^4.3.10",
+    "framer-motion": "^6.5.1",
+    "next-themes": "^0.4.6",
+    "openai": "^4.96.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod-to-json-schema": "^3.24.5"
+  }
+}
